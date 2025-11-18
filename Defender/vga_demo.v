@@ -27,6 +27,18 @@ module vga_demo(CLOCK_50, SW, KEY, LEDR, HEX5, HEX4, HEX3, HEX2, HEX1, HEX0,
 	output wire VGA_BLANK_N;
 	output wire VGA_SYNC_N;
 	output wire VGA_CLK;	
+	
+	 wire fire;
+
+    
+
+    wire [nX-1:0] missile_x;
+    wire [nY-1:0] missile_y;
+    wire [8:0] missile_color;
+    wire missile_write;
+    wire missile_active;
+	 
+	 
 
 	
     // The signals below are used to multiplex the pixels displayed for objects 1 and 2
@@ -34,15 +46,11 @@ module vga_demo(CLOCK_50, SW, KEY, LEDR, HEX5, HEX4, HEX3, HEX2, HEX1, HEX0,
 	wire [nY-1:0] O1_y, O2_y, MUX_y;    // y coordinate multiplexer
 	wire [8:0] O1_color, O2_color, MUX_color; // color multiplexer
 	wire O1_write, O2_write, MUX_write; // write control multiplexer
+	wire M_write;
+	assign M_write = missile_write;
 
 
-        // missile wires
-    wire [nX-1:0] M_x;
-    wire [nY-1:0] M_y;
-    wire [8:0]    M_color;
-    wire          M_write;
-   
-
+  
     
     wire O1_done, O2_done, done;    // object move completed
     reg O1_O2;                      // draw object 1 when cleared, object 2 when set
@@ -127,6 +135,19 @@ module vga_demo(CLOCK_50, SW, KEY, LEDR, HEX5, HEX4, HEX3, HEX2, HEX1, HEX0,
             y_Q <= A;
         else
             y_Q <= Y_D;
+				
+	assign fire = fire_pulse;
+
+    missile M1(
+        .Clock(CLOCK_50),
+        .Resetn (KEY[0]),
+        .fire (fire_pulse),
+        .VGA_x (missile_x),
+        .VGA_y (missile_y),
+        .VGA_color(missile_color),
+        .VGA_write (missile_write),
+        .active (missile_active)
+    );
 
     // instantiate object 1
     object O1 (Resetn, CLOCK_50, KEY1, 1'b0, O1_dir, O1_x, O1_y, 
@@ -142,13 +163,7 @@ module vga_demo(CLOCK_50, SW, KEY, LEDR, HEX5, HEX4, HEX3, HEX2, HEX1, HEX0,
         defparam O2.INIT_FILE = "./MIF/alien_32_32_9.mif";
 
         // instantiate missile: start at plane's initial spot, move RIGHT continuously
-    missle M1 (Resetn, CLOCK_50, fire_pulse, 1'b1, 2'b11,  
-               M_x, M_y, M_color, M_write);
-
-        defparam M1.XOFFSET   = 320;
-        defparam M1.YOFFSET   = 240;
-      
-
+ 
     assign done = O1_done | O2_done;
 
     // debug 
@@ -162,10 +177,10 @@ module vga_demo(CLOCK_50, SW, KEY, LEDR, HEX5, HEX4, HEX3, HEX2, HEX1, HEX0,
     wire          base_w   = (!O1_O2) ? O1_write : O2_write;
 
         // missile has top priority
-    assign MUX_x     = M_write ? M_x     : base_x;
-    assign MUX_y     = M_write ? M_y     : base_y;
-    assign MUX_color = M_write ? M_color : base_c;
-    assign MUX_write = M_write ? 1'b1    : base_w;
+    assign MUX_x     = M_write ? missile_x     : base_x;
+    assign MUX_y     = M_write ? missile_y    : base_y;
+    assign MUX_color = M_write ? missile_color : base_c;
+    assign MUX_write = M_write ? missile_write    : base_w;
 
 
     // Show O1_x, O1_y, O2_x, O2_y nibbles on HEX for debug
@@ -483,134 +498,204 @@ endmodule
 
 // implements a moving colored object (fixed red, constant speed)
 // implements a horizontally-moving, fixed-color object (constant speed)
-module missile (Resetn, Clock, go, ready, VGA_x, VGA_y, VGA_color, VGA_write);
-
-    // --- Parameters (same style as your code) ---
+module missile(Clock, Resetn, fire, VGA_x, VGA_y, VGA_color, VGA_write, active);
+    
     parameter nX = 10;
     parameter nY = 9;
 
-    parameter XSCREEN = 640;
-    parameter YSCREEN = 480;
+    input wire Clock;
+    input wire Resetn;
+    input wire fire;
+    //input  wire [nX-1:0] player_x;
+    //input  wire [nY-1:0] player_y;  
 
-    parameter XDIM = XSCREEN>>4, YDIM = 2; // object's width/height
-    parameter X_INIT = 10'd0;
-    parameter Y_INIT = 9'd0;
-
-    parameter KK = 15;  // constant speed divider (bigger = slower)
-    parameter MM = 8;   // kept for compatibility, unused
-
-    // state codes
-    parameter A = 4'b0000, B = 4'b0001, C = 4'b0010, D = 4'b0011,
-              E = 4'b0100, F = 4'b0101, G = 4'b0110, H = 4'b0111,
-              I = 4'b1000, J = 4'b1001, K = 4'b1010, L = 4'b1011;
-
-    // right boundary (no localparam)
-    parameter X_RIGHT = XSCREEN - XDIM;
-
-    input  wire Resetn, Clock;
-    input  wire go;                   // was gnt
-    output reg  ready;                // was req
     output wire [nX-1:0] VGA_x;
     output wire [nY-1:0] VGA_y;
-    output wire [8:0]    VGA_color;
-    output wire          VGA_write;
+    output wire [8:0] VGA_color;
+    output wire VGA_write;
+    output wire active;
+    
 
-    // --- Signals (kept in your naming style) ---
+    parameter ScreenX = 640;
 
-    wire [nX-1:0] X, XC, X0;
-    wire [nY-1:0] Y, YC, Y0;
-    wire [8:0]    color;
-    wire [KK-1:0] slow;
-    reg  Lx, Ly, Ex, Ey, Lxc, Lyc, Exc, Eyc;
-    wire sync, Xdir;
-    reg  erase, Tdir;
-    reg  [3:0] y_Q, Y_D;
-    reg  write;
+    parameter missile_length = 25;
+    parameter missile_thickness = 3;
 
-    // fixed positions/color
-    assign X0 = X_INIT;
-    assign Y0 = Y_INIT;
-    parameter clean = 9'b000000000;     // erase = black
-    assign color = 9'b111000000;      // fixed RED
+    parameter initialX = 10'd100;
+    parameter initialY = 9'd200;
 
-    // X moves (enable Ex), Y stays fixed
-    UpDn_count U2 (X0, Clock, Resetn, Ex, Lx, Xdir, X);  defparam U2.n = nX;
-    UpDn_count U1 (Y0, Clock, Resetn, 1'b0, Ly, 1'b0, Y); defparam U1.n = nY;
+    parameter N = 16; // bit width of counter, smaller N -> higher movement speed
 
-    // box traversal
-    UpDn_count U3 ({nX{1'd0}}, Clock, Resetn, Exc, Lxc, 1'b1, XC); defparam U3.n = nX;
-    UpDn_count U4 ({nY{1'd0}}, Clock, Resetn, Eyc, Lyc, 1'b1, YC); defparam U4.n = nY;
+    parameter [8:0] RED = 9'b111000000;
+    parameter [8:0] BLACK = 9'b0; 
 
-    // constant-speed tick
-    Up_count   U6 (Clock, Resetn, slow);                  defparam U6.n = KK;
-    assign sync = &slow;  // wait until slow counter is all 1's
+    parameter [nX-1:0] Max_X = ScreenX;
 
-    // toggle horizontal direction at edges
-    ToggleFF U7 (Tdir, Resetn, Clock, Xdir);
+    reg [nX-1:0] posX; 
+    reg [nY-1:0] posY;
 
-    // VGA outputs
-    assign VGA_x     = X + XC;
-    assign VGA_y     = Y + YC;
-    assign VGA_color = (erase == 1'b0) ? color : clean;
+    reg [nX-1:0] XC; 
+    reg [nY-1:0] YC; 
+
+    reg erase; // 1 for erase;
+    reg write; // 1 for writing a pixel;
+
+    wire sync;
+    reg [N-1:0] cnt;
+
+    reg [3:0] state;
+    reg [3:0] next_state;
+
+    parameter IDLE = 4'b0000, 
+              INITIAL = 4'b0001,
+              DRAW = 4'b0010,
+              WAIT = 4'b0011,
+              ERASE = 4'b0100,
+              MOVE = 4'b0101,
+              DONE = 4'b0110;
+
+    assign active = (state!=IDLE) && (state!=DONE);
+    // counter to control movement speed 
+
+    always @ (posedge Clock) begin 
+        if (!Resetn)
+            cnt <= 0;
+        else 
+            cnt <= cnt + 1'b1;
+    end
+    
+    assign sync = (cnt == {N{1'b1}} );
+
+    assign VGA_x = posX +XC;
+
+    assign VGA_y = posY +YC;
+    assign VGA_color = erase ? BLACK : RED;
     assign VGA_write = write;
 
-    // ---------------- FSM (A..L) ----------------
-    always @(*)
-        case (y_Q)
-            A:  Y_D = B;                                  // init
-            B:  Y_D = (XC != XDIM-1) ? B : C;             // initial draw
-            C:  Y_D = (YC != YDIM-1) ? B : D;
-            D:  Y_D = (sync) ? E : D;                     // wait for tick
-            E:  Y_D = (go) ? F : E;                       // wait for grant/go
-            F:  Y_D = (XC != XDIM-1) ? F : G;             // erase
-            G:  Y_D = (YC != YDIM-1) ? F : H;
-            H:  Y_D = I;                                  // edge check
-            I:  Y_D = J;                                  // move X one step
-            J:  Y_D = (XC != XDIM-1) ? J : K;             // redraw
-            K:  Y_D = (YC != YDIM-1) ? J : L;
-            L:  Y_D = D;                                  // back to wait
-            default: Y_D = A;
-        endcase
+    always @(*) begin
+        next_state = state;
+        write = 1'b0;
+        erase = 1'b0;
 
-    // FSM outputs
-    always @(*)
-    begin
-        // defaults
-        Lx=1'b0; Ly=1'b0; Ex=1'b0; Ey=1'b0;
-        Lxc=1'b0; Lyc=1'b0; Exc=1'b0; Eyc=1'b0;
-        erase=1'b0; write=1'b0; Tdir=1'b0; ready=1'b0;
+        case (state)
+            IDLE:begin
+                if (fire)
+                    next_state = INITIAL;
+            end
 
-        case (y_Q)
-            A: begin Lx=1'b1; Ly=1'b1; Lxc=1'b1; Lyc=1'b1; end   // init
+            INITIAL:begin
+                next_state = DRAW;
+            end
 
-            // draw
-            B: begin Exc=1'b1; write=1'b1; end
-            C: begin Lxc=1'b1; Eyc=1'b1; end
+            DRAW: begin 
+                write = 1'b1;
+                erase = 1'b0;
 
-            // wait & request
-            D: begin Lyc=1'b1; end
-            E: begin ready=1'b1; end                              // request/ready
+                if ((XC == missile_length-1) && (YC == missile_thickness-1))
+                    next_state = WAIT;
+                else
+                    next_state = DRAW;
+            end 
 
-            // erase
-            F: begin ready=1'b1; Exc=1'b1; erase=1'b1; write=1'b1; end
-            G: begin ready=1'b1; Lxc=1'b1; Eyc=1'b1; end
+            WAIT: begin 
+                if (sync)
+                    next_state = ERASE;
+                else
+                    next_state = WAIT;
+            end 
 
-            // edge check then move X
-            H: begin ready=1'b1; Lyc=1'b1; Tdir = (X == 'd0) || (X == X_RIGHT); end
-            I: begin ready=1'b1; Ex=1'b1; end
+            ERASE: begin 
+                write = 1'b1;
+                erase = 1'b1;
+                if ((XC == missile_length-1) && (YC == missile_thickness-1))
+                    next_state = MOVE;
+                else
+                    next_state = ERASE;
+            end
 
-            // redraw
-            J: begin ready=1'b1; Exc=1'b1; write=1'b1; end
-            K: begin ready=1'b1; Lxc=1'b1; Eyc=1'b1; end
-            L: begin Lyc=1'b1; end
+            MOVE: begin
+                if (posX < Max_X)
+                    next_state = DRAW; 
+                else
+                    next_state = DONE;
+            end
+
+
+            DONE: begin 
+                if (fire)
+                    next_state = INITIAL;
+            end
+
+            default:begin 
+                next_state = IDLE;
+            end
         endcase
     end
 
-    // FSM FFs
-    always @(posedge Clock)
-        if (Resetn == 0)
-            y_Q <= A;
-        else
-            y_Q <= Y_D;
+    always @(posedge Clock) begin
+        if (!Resetn) begin
+            state <= IDLE;
+            posX <= initialX; // <= {nX{1'b0}}; use when having player_x as input
+            posY <= initialY; // <= {nY{1'b0}};
+            XC <=0;
+            YC <=0;
+        end
+        else begin
+            state <= next_state;
+            case (state)
+                IDLE:begin
+                    XC <= 0;
+                    YC <= 0;
+
+                    if (fire) begin 
+                        posX <= initialX; 
+                        posY <= initialY; 
+                    end
+                end
+
+                INITIAL: begin
+                    posX <= initialX; // player_x
+                    posY <= initialY; // player_y
+                    XC <= 0;
+                    YC <= 0;
+                end
+
+                DRAW: begin 
+                    if (XC < missile_length-1) begin
+                        XC <= XC + 1'b1;
+                    end
+                    else begin 
+                        XC <= 0;
+                        if (YC < missile_thickness-1) begin
+                            YC <= YC + 1'b1;
+                        end
+                        else 
+                            YC <= 0;
+                    end
+                end
+
+                MOVE: begin
+                    if (posX<Max_X)
+                        posX <= posX + 1'b1;
+                end
+
+                ERASE: begin 
+                    if (XC < missile_length-1) begin
+                        XC <= XC + 1'b1;
+                    end
+                    else begin
+                        XC <= 0;
+                        if (YC < missile_thickness-1) begin
+                            YC <= YC + 1'b1;
+                        end
+                        else begin
+                            YC <= 0;
+                        end
+                    end
+                end
+
+            endcase
+        end
+    end
 
 endmodule
