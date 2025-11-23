@@ -1,0 +1,31 @@
+WIDTH=9;
+DEPTH=64;
+
+ADDRESS_RADIX=HEX;
+DATA_RADIX=HEX;
+
+CONTENT BEGIN
+  [0..F]  : 0;        -- first 2 rows: all dots
+
+  10      : 0;        -- row 2: .RR.....
+  [11..12]: 1C0;
+  [13..17]: 0;
+
+  18      : 0;        -- row 3: .RRRR...
+  [19..1C]: 1C0;
+  [1D..1F]: 0;
+
+  20      : 1C0;      -- row 4: RGRYGR..
+  21      : 38;
+  22      : 1C0;
+  23      : 1F8;
+  24      : 38;
+  25      : 1C0;
+  [26..27]: 0;
+
+  28      : 0;        -- row 5: .RRRRRRR
+  [29..2F]: 1C0;
+
+  [30..37]: 0;        -- row 6: ........
+  [38..3F]: 0;        -- row 7: ........
+END;
