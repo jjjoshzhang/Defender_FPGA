@@ -32,19 +32,8 @@ module vga_demo(
     sync S1 (~KEY[1], Resetn, CLOCK_50, KEY1_sync);
     sync S2 (~KEY[2], Resetn, CLOCK_50, KEY2_sync);
 
-    // Fire pulse from KEY[3]
-    wire KEY3_sync;
-    reg  KEY3_sync_d;
+    // Fire pulse from keyboard 'M' key (generated inside spacecraft)
     wire fire_pulse;
-
-    sync S3 (~KEY[3], Resetn, CLOCK_50, KEY3_sync);
-    always @(posedge CLOCK_50) begin
-        if (!Resetn)
-            KEY3_sync_d <= 1'b0;
-        else
-            KEY3_sync_d <= KEY3_sync;
-    end
-    assign fire_pulse = KEY3_sync & ~KEY3_sync_d;
 
     // Spacecraft wires
     wire [nX-1:0] sc_x;
@@ -67,7 +56,8 @@ module vga_demo(
         .VGA_write    (sc_write),
         .obj_x        (sc_obj_x),
         .obj_y        (sc_obj_y),
-        .scancode_out (sc_scancode)
+        .scancode_out (sc_scancode),
+        .fire_m       (fire_pulse)
     );
 
     // Score / hit wires
@@ -197,13 +187,9 @@ endmodule
 //============================================================
 //  SPACECRAFT (player, controlled by PS2)
 //============================================================
-
-//============================================================
-//  SPACECRAFT (player, controlled by PS2)
-//============================================================
 module spacecraft(
     Clock, Resetn, go, PS2_CLK, PS2_DAT,
-    VGA_x, VGA_y, VGA_color, VGA_write, obj_x, obj_y, scancode_out
+    VGA_x, VGA_y, VGA_color, VGA_write, obj_x, obj_y, scancode_out, fire_m
 );
     parameter nX = 10;
     parameter nY = 9;
@@ -220,6 +206,7 @@ module spacecraft(
     output wire [nX-1:0] obj_x;
     output wire [nY-1:0] obj_y;
     output wire [7:0]    scancode_out;
+    output wire          fire_m;
 
     wire PS2_CLK_S, PS2_DAT_S;
     sync S0 (PS2_CLK, Resetn, Clock, PS2_CLK_S);
@@ -254,6 +241,9 @@ module spacecraft(
 
     wire ps2_rec;
     assign ps2_rec = (Packet == 4'd11) && (Serial[30:23] == Serial[8:1]);
+
+    // Generate missile fire pulse on keyboard 'M' (scan code 0x3A)
+    assign fire_m = ps2_rec && (Serial[8:1] == 8'h3A);
 
     wire [7:0] scancode;
     reg  Esc;
@@ -308,7 +298,7 @@ module spacecraft(
         step = 1'b0;
         case (y_Q)
             S_A: begin
-                // idle: waiting for ps2_rec in FSM logic
+                // idle
             end
 
             S_B: begin
@@ -357,7 +347,7 @@ module spacecraft(
         .obj_y     (obj_y)
     );
 
-    // Make spacecraft move faster: 4 pixels per step
+    // Make spacecraft move faster: 5 pixels per step
     defparam O1.UX.STEP = 5;
     defparam O1.UY.STEP = 5;
 
