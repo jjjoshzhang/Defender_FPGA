@@ -6,8 +6,8 @@
       "type": "lldb",
       "request": "launch",
       "args": [],
-      "cwd": "/Users/josh/Desktop/ECE241-Defender/MIF_c/bmp_to_mif",
-      "program": "/Users/josh/Desktop/ECE241-Defender/MIF_c/bmp_to_mif/build/Debug/outDebug"
+      "cwd": "/Users/josh/Desktop/ECE241-Defender",
+      "program": "/Users/josh/Desktop/ECE241-Defender/build/Debug/outDebug"
     }
   ]
 }
