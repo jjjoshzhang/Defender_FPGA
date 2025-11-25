@@ -545,7 +545,7 @@ module object(
 );
     parameter nX = 10;
     parameter nY = 9;
-    parameter XOFFSET = 320;
+    parameter XOFFSET = 40;
     parameter YOFFSET = 240;
     parameter LEFT  = 2'b00;
     parameter RIGHT = 2'b11;
