@@ -27,12 +27,13 @@ module vga_demo(
     output wire        VGA_SYNC_N;
     output wire        VGA_CLK;
 
-    // Active-high reset (KEY[0] = 1 -> reset)
+    // NOTE: Active-*low* reset in all code (if (!Resetn) ...)
+    // So KEY[0] must be 0 to reset.
     wire Resetn;
     assign Resetn = KEY[0];
 
     //========================================================
-    // Key sync (KEY1: start game, KEY2: start alien)
+    // Key sync (KEY1: start game, KEY2: unused here)
     //========================================================
     wire KEY1_sync, KEY2_sync;
     sync S1 (~KEY[1], Resetn, CLOCK_50, KEY1_sync);
@@ -67,9 +68,55 @@ module vga_demo(
     wire [nY-1:0] sc_obj_y;
     wire [7:0]    sc_scancode;
 
-    // Only allow spacecraft to "go" in PLAY state
+    //========================================================
+    // Score / hit wires
+    //========================================================
+    wire hit1;
+    wire missile_hit = hit1;
+
+    wire [7:0] score;
+
+    score score_count(
+        .Clock       (CLOCK_50),
+        .Resetn      (Resetn),
+        .missile_hit (missile_hit),
+        .score       (score)
+    );
+
+    // Show low nibble of score on HEX2
+    hex7seg H2 (score[3:0], HEX2);
+
+    //========================================================
+    // Endgame detection (latched once)
+    //========================================================
+    wire win, lose;
+    reg  endgame;
+    reg  result;       // 1 = win, 0 = lose
+
+    assign win = (score >= 8'd10);
+
+    always @(posedge CLOCK_50) begin
+        if (!Resetn) begin
+            endgame <= 1'b0;
+            result  <= 1'b0;
+        end
+        else if (!endgame && in_play) begin
+            if (win) begin
+                endgame <= 1'b1;
+                result  <= 1'b1;  // green
+            end
+            else if (lose) begin
+                endgame <= 1'b1;
+                result  <= 1'b0;  // red
+            end
+        end
+    end
+
+    //========================================================
+    // Spacecraft instance (movement only in PLAY and not endgame)
+    //========================================================
     wire sc_go;
-    assign sc_go = in_play & KEY1_sync;
+    assign sc_go = in_play & KEY1_sync & ~endgame;
 
     spacecraft SC1(
         .Clock        (CLOCK_50),
@@ -92,6 +139,7 @@ module vga_demo(
     reg  m_pressed_d;
     wire m_pressed;
     wire fire_pulse;
+    wire fire_enabled;
 
     // 'm' key in PS/2 scan set 2 is 0x3A
     assign m_pressed = (sc_scancode == 8'h3A);
@@ -104,25 +152,9 @@ module vga_demo(
     end
 
     // one-clock pulse on rising edge of "m pressed"
-    assign fire_pulse = m_pressed & ~m_pressed_d;
-
-    //========================================================
-    // Score / hit wires
-    //========================================================
-    wire hit1, hit2, hit3, hit4;
-    wire missile_hit = hit1 | hit2 | hit3 | hit4;
-
-    wire [7:0] score;
-
-    score score_count(
-        .Clock       (CLOCK_50),
-        .Resetn      (Resetn),
-        .missile_hit (missile_hit),
-        .score       (score)
-    );
-
-    // Show low nibble of score on HEX2
-    hex7seg H2 (score[3:0], HEX2);
+    assign fire_pulse   = m_pressed & ~m_pressed_d;
+    // disable firing once game has ended
+    assign fire_enabled = fire_pulse & in_play & ~endgame;
 
     //========================================================
     // Alien wires
@@ -133,24 +165,51 @@ module vga_demo(
     wire          al_write;
     wire [nX-1:0] al_obj_x;
     wire [nY-1:0] al_obj_y;
-    wire          al1_alive;
+    wire          al_alive;
+    wire          al_resetn;
+    wire          al_go;
 
-    // Only allow alien to move in PLAY state
-    wire al_go;
-    assign al_go = in_play & KEY2_sync;
+    // Alien moves only in PLAY and not after endgame
+    //assign al_go = in_play &KEY1_sync& ~endgame;
 
     alien AL1(
         .Clock     (CLOCK_50),
-        .Resetn    (Resetn),
+        .Resetn    (al_resetn),
         .go        (al_go),
         .hit       (hit1),
-        .alive     (al1_alive),
+        .score     (score),
+        .alive     (al_alive),
         .VGA_x     (al_x),
         .VGA_y     (al_y),
         .VGA_color (al_color),
         .VGA_write (al_write),
         .obj_x     (al_obj_x),
         .obj_y     (al_obj_y)
+    );
+	 
+	 wire [9:0] al_x_safe;
+	 assign al_x_safe = (al_obj_x == 10'd0)?10'd1 :al_obj_x;
+
+    //========================================================
+    // alien auto spawn (only controls Resetn of alien)
+    //========================================================
+    spawn spawn1(
+        .Clock         (CLOCK_50),
+        .Resetn        (Resetn),
+        .in_play       (in_play),
+        .al_spawn_reset(al_resetn),
+        .al_alive      (al_alive)
+    );
+
+    //========================================================
+    // game_lose detection (combinational)
+    //========================================================
+    game_lose G1(
+		  .Clock (CLOCK_50),
+		  .Resetn(KEY[1]),
+        .al_x    (al_x_safe),
+        .al_alive(al_alive),
+        .lose    (lose)
     );
 
     //========================================================
@@ -167,7 +226,7 @@ module vga_demo(
     missile M1(
         .Clock     (CLOCK_50),
         .Resetn    (Resetn),
-        .fire      (fire_pulse),
+        .fire      (fire_enabled),
         .hit       (missile_hit),
         .player_x  (sc_obj_x),
         .player_y  (sc_obj_y),
@@ -188,7 +247,7 @@ module vga_demo(
         .missile_y (missile_posY),
         .alien_x   (al_obj_x),
         .alien_y   (al_obj_y),
-        .alive     (al1_alive),
+        .alive     (al_alive),
         .hit       (hit1)
     );
 
@@ -245,10 +304,30 @@ module vga_demo(
     );
 
     //========================================================
+    // RESULT SCREEN: fill screen with green (win) or red (lose)
+    //========================================================
+    wire [nX-1:0] rs_x;
+    wire [nY-1:0] rs_y;
+    wire [8:0]    rs_color;
+    wire          rs_write;
+
+    result_screen RESULT(
+        .Clock     (CLOCK_50),
+        .Resetn    (Resetn),
+        .show      (endgame), // start when game ends
+        .result    (result),  // 1=win (green), 0=lose (red)
+        .VGA_x     (rs_x),
+        .VGA_y     (rs_y),
+        .VGA_color (rs_color),
+        .VGA_write (rs_write)
+    );
+
+    //========================================================
     // FINAL MUX TO VGA ADAPTER:
-    //   MENU  -> no writes (show bg.mif)
-    //   CLEAR -> clear_screen drives VGA
-    //   PLAY  -> game objects drive VGA
+    //   RESULT -> full-screen color on top
+    //   CLEAR  -> clear_screen drives VGA
+    //   PLAY   -> game objects drive VGA
+    //   MENU   -> bg.mif only
     //========================================================
     reg [nX-1:0] VGA_x_drv;
     reg [nY-1:0] VGA_y_drv;
@@ -256,7 +335,14 @@ module vga_demo(
     reg          VGA_write_drv;
 
     always @(*) begin
-        if (in_clear) begin
+        if (rs_write) begin
+            // Game over screen on top of everything
+            VGA_x_drv     = rs_x;
+            VGA_y_drv     = rs_y;
+            VGA_color_drv = rs_color;
+            VGA_write_drv = rs_write;
+        end
+        else if (in_clear) begin
             // Clearing screen to black
             VGA_x_drv     = clr_x;
             VGA_y_drv     = clr_y;
@@ -458,8 +544,8 @@ module spacecraft(
     );
 
     // Make spacecraft move faster: STEP pixels per step
-    defparam O1.UX.STEP = 5;
-    defparam O1.UY.STEP = 5;
+    defparam O1.UX.STEP = 7;
+    defparam O1.UY.STEP = 7;
 
 endmodule
 
@@ -467,7 +553,7 @@ endmodule
 //  ALIEN (automatic movement)
 //============================================================
 module alien(
-    Clock, Resetn, go, hit, alive,
+    Clock, Resetn, go, hit, score, alive,
     VGA_x, VGA_y, VGA_color, VGA_write, obj_x, obj_y
 );
     parameter nX = 10;
@@ -477,6 +563,7 @@ module alien(
     input  wire Resetn;
     input  wire go;
     input  wire hit;
+    input  wire [7:0] score;   // can be used to adjust speed if desired
     output wire alive;
     output wire [nX-1:0] VGA_x;
     output wire [nY-1:0] VGA_y;
@@ -486,14 +573,14 @@ module alien(
     output wire [nY-1:0] obj_y;
 
     // Slow counter controls how often the alien moves
-    reg [20:0] slow;
-    wire       step;
+    reg  [19:0] slow;
+    wire        step;
 
     always @(posedge Clock) begin
         if (!Resetn || go)
-            slow <= 21'd0;
+            slow <= 20'd0;
         else
-            slow <= slow + 21'd1;
+            slow <= slow + 20'd1;
     end
 
     assign step = &slow;  // pulse when all bits = 1
@@ -506,7 +593,7 @@ module alien(
 
     random_y R1(
         .Clock        (Clock),
-        .Resetn       (!Resetn),
+        .Resetn       (Resetn),
         .alien_init_y (init_y)
     );
 
@@ -765,10 +852,10 @@ module missile(
     output reg  [nX-1:0] posX;
     output reg  [nY-1:0] posY;
 
-    parameter ScreenX          = 640;
-    parameter missile_length   = 25;
-    parameter missile_thickness= 3;
-    parameter N                = 16;
+    parameter ScreenX           = 640;
+    parameter missile_length    = 25;
+    parameter missile_thickness = 3;
+    parameter N                 = 16;
 
     parameter [8:0] RED   = 9'b111000000;
     parameter [8:0] BLACK = 9'b0;
@@ -938,7 +1025,7 @@ module game_fsm(
     in_menu, in_clear, in_play
 );
     input  wire Clock;
-    input  wire Resetn;      // active-high reset
+    input  wire Resetn;      // active-low reset in this design
     input  wire start_game;  // from KEY1_sync
     input  wire clear_done;  // from clear_screen
 
@@ -1187,10 +1274,10 @@ module collision(
     wire [nY-1:0] missile_top    = missile_y;
     wire [nY-1:0] missile_bottom = missile_y + (missile_thickness - 1);
 
-    wire [nX-1:0] alien_left   = alien_x - 16;
-    wire [nX-1:0] alien_right  = alien_x + (alien_width - 1) - 16;
-    wire [nY-1:0] alien_top    = alien_y - 16;
-    wire [nY-1:0] alien_bottom = alien_y + (alien_height - 1) - 16;
+    wire [nX-1:0] alien_left   = alien_x - 6;
+    wire [nX-1:0] alien_right  = alien_x + (alien_width - 1) - 6;
+    wire [nY-1:0] alien_top    = alien_y - 8;
+    wire [nY-1:0] alien_bottom = alien_y + (alien_height - 1) - 8;
 
     wire collision = (missile_left   <= alien_right ) &&
                      (missile_right  >= alien_left  ) &&
@@ -1252,9 +1339,7 @@ module random_y (
     assign rand = seed[8:0];
 
     always @(posedge Clock) begin
-        if (!Resetn)
-            alien_init_y <= 9'd240;
-        else if (rand < 9'd16)
+        if (rand < 9'd16)
             alien_init_y <= 9'd16;
         else if (rand > 9'd464)
             alien_init_y <= 9'd464;
@@ -1276,5 +1361,175 @@ module lfsr_fib_16 #(parameter INITIAL_SEED = 16'hBEEF) (
             seed <= INITIAL_SEED;
         else
             seed <= {seed[14:0], next_bit};
+    end
+endmodule
+
+//============================================================
+//  game_lose detection (combinational)
+//============================================================
+module game_lose(
+	 Clock,
+	 Resetn,
+    al_x,
+    al_alive,
+    lose
+);  
+	 input wire Clock;
+	 input wire Resetn;
+    input  wire [9:0] al_x;
+    input  wire       al_alive;
+
+    output reg       lose;
+
+    // lose when alien is alive and reaches the left side
+	 always @ (posedge Clock) begin 
+		if (!Resetn) begin
+			lose <= 1'b0;
+		end else begin 
+			if ((al_alive) && (al_x>10'd2) && (al_x<10'd5)) begin
+				lose <= 1'b1;
+			end
+		end
+	 end
+endmodule
+
+//============================================================
+//  Alien spawn: generates reset pulses for alien
+//============================================================
+module spawn(
+    Clock,
+    Resetn,
+    in_play,
+    al_spawn_reset,
+    al_alive
+);
+
+    input wire Clock;
+    input wire Resetn;
+    input wire in_play;
+    input wire al_alive;
+    output wire al_spawn_reset;
+
+    reg [25:0] timer;
+    reg        waiting;
+    reg        prev_alive;
+    reg        respawn_pulse;
+
+    always @(posedge Clock) begin
+        if (!Resetn) begin
+            prev_alive    <= 1'b0;
+            waiting       <= 1'b0;
+            timer         <= 26'd0;
+            respawn_pulse <= 1'b0;
+        end
+        else begin
+            prev_alive    <= al_alive;
+            respawn_pulse <= 1'b0;
+
+            if (!in_play) begin
+                waiting <= 1'b0;
+                timer   <= 26'd0;
+            end
+            else begin
+                if (!waiting) begin
+                    // detect alien just died (alive -> 0)
+                    if (prev_alive && !al_alive) begin
+                        waiting <= 1'b1;
+                        timer   <= 26'd0;
+                    end
+                end
+                else begin
+                    if (timer == 26'd50_000_000 - 1) begin
+                        waiting       <= 1'b0;
+                        respawn_pulse <= 1'b1;   // one-cycle reset pulse
+                    end
+                    else begin
+                        timer <= timer + 26'd1;
+                    end
+                end
+            end
+        end
+    end
+
+    // active-low reset for alien: momentarily low when respawn_pulse = 1
+    assign al_spawn_reset = Resetn & ~respawn_pulse;
+
+endmodule
+
+
+//============================================================
+//  RESULT SCREEN: full-screen green (win) / red (lose)
+//============================================================
+module result_screen(
+    Clock, Resetn, show, result,
+    VGA_x, VGA_y, VGA_color, VGA_write
+);
+    parameter nX          = 10;
+    parameter nY          = 9;
+    parameter COLS        = 640;
+    parameter ROWS        = 480;
+    parameter COLOR_DEPTH = 9;
+
+    input  wire Clock;
+    input  wire Resetn;
+    input  wire show;      // 1 = start drawing result screen
+    input  wire result;    // 1 = win (green), 0 = lose (red)
+
+    output reg  [nX-1:0]          VGA_x;
+    output reg  [nY-1:0]          VGA_y;
+    output reg  [COLOR_DEPTH-1:0] VGA_color;
+    output reg                    VGA_write;
+
+    parameter [COLOR_DEPTH-1:0] GREEN = 9'b000111000;
+    parameter [COLOR_DEPTH-1:0] RED   = 9'b111000000;
+
+    reg [nX-1:0] x;
+    reg [nY-1:0] y;
+    reg          active;
+
+    // Scan the whole screen once when show=1
+    always @(posedge Clock) begin
+        if (!Resetn) begin
+            x      <= {nX{1'b0}};
+            y      <= {nY{1'b0}};
+            active <= 1'b0;
+        end
+        else begin
+            if (show && !active) begin
+                active <= 1'b1;
+                x      <= {nX{1'b0}};
+                y      <= {nY{1'b0}};
+            end
+            else if (active) begin
+                if (x == COLS-1) begin
+                    x <= 0;
+                    if (y == ROWS-1) begin
+                        y      <= 0;
+                        active <= 1'b0; // finished fill once
+                    end
+                    else begin
+                        y <= y + 1'b1;
+                    end
+                end
+                else begin
+                    x <= x + 1'b1;
+                end
+            end
+        end
+    end
+
+    always @(*) begin
+        if (active) begin
+            VGA_x     = x;
+            VGA_y     = y;
+            VGA_write = 1'b1;
+            VGA_color = result ? GREEN : RED;
+        end
+        else begin
+            VGA_x     = {nX{1'b0}};
+            VGA_y     = {nY{1'b0}};
+            VGA_write = 1'b0;
+            VGA_color = {COLOR_DEPTH{1'b0}};
+        end
     end
 endmodule
